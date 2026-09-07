@@ -1,4 +1,6 @@
-# AI-Based Fake Identity & Document Screening System
+# Robust-OCR-For-Fake-Identity-and-Document-Screening
+
+## AI-Based Fake Identity & Document Screening System
 
 This repository supports an SIH 2026 problem statement focused on intelligent border document screening.
 
