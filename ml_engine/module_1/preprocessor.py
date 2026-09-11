@@ -4,6 +4,11 @@ import numpy as np
 from realesrgan import RealESRGANer
 from basicsr.archs.rrdbnet_arch import RRDBNet
 
+import pytesseract
+
+import os
+
+os.environ["TESSDATA_PREFIX"] = "ml_engine/tessdata"
 
 class NoContourFound(Exception):
     pass
@@ -11,6 +16,12 @@ class NoContourFound(Exception):
 class InvalidImage(Exception):
     pass
 
+config_mrz = (
+    '--tessdata-dir "ml_engine/tessdata" '
+    "-l mrz --oem 1 --psm 6 "
+    "-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789< "
+    "-c preserve_interword_spaces=0"
+)
 
 def order_points(pts):
     """
@@ -78,6 +89,7 @@ def detect_document_contour(
     """
     if img is None or not isinstance(img, np.ndarray):
         raise ValueError("Input 'img' must be a valid numpy array.")
+    
 
     h_img, w_img = img.shape[:2]
     total_area = h_img * w_img
@@ -119,12 +131,12 @@ def detect_document_contour(
             if width == 0 or height == 0:
                 continue
 
-            aspect_ratio = max(width, height) / float(min(width, height))
+            aspect_ratio = max(width,height)/min(height,width)
             ar_diff = abs(aspect_ratio - target_aspect_ratio)
-
-            # Weight score favoring high area and low aspect ratio deviation
+            # Weight score favoring bottom most , high area and low aspect ratio deviation
             valid_candidates.append({
                 "contour": pts,
+                "center_y" : np.mean(pts[: ,1]),
                 "area": area,
                 "ar_diff": ar_diff
             })
@@ -133,7 +145,7 @@ def detect_document_contour(
         raise NoContourFound("Did not find a valid countour")
 
     # Primary sort: lowest aspect ratio deviation; Secondary: highest area
-    valid_candidates.sort(key=lambda x: (x["ar_diff"], -x["area"]))
+    valid_candidates.sort(key=lambda x: (x["ar_diff"],x["center_y"],-x["area"]))
     
     return valid_candidates[0]["contour"]
 
@@ -147,6 +159,7 @@ def esrgan_upscaling(img):
     
     upscaler = RealESRGANer(scale = 4,
                             model_path= "ml_engine/weights/RealESRGAN_x4plus.pth",
+                            tile = 198,
                             model = model)
     
     output, _ = upscaler.enhance(img)
@@ -155,10 +168,40 @@ def esrgan_upscaling(img):
     
     return cv2.cvtColor(output , cv2.COLOR_BGR2GRAY)
 
-def adaptive_binarization(img):
-    """Apply adaptive thresholding to a grayscale image."""
-    return cv2.adaptiveThreshold(img , 255 , cv2.ADAPTIVE_THRESH_GAUSSIAN_C , cv2.THRESH_BINARY, 11 , 2)
+def preprocess_mrz(img_path : str) -> None:
+    
+    # 1. Load image
+    img = cv2.imread(img_path , cv2.IMREAD_GRAYSCALE)
 
+# 2. Add white padding around the text
+    padded = cv2.copyMakeBorder(img, 40, 40, 40, 40, cv2.BORDER_CONSTANT, value=255) # type: ignore
+
+# 3. Smooth jagged interpolation artifacts
+    blurred = cv2.GaussianBlur(padded, (3, 3), 0)
+    _, cleaned = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    
+    cv2.imwrite(img_path , cleaned)
+    
+    
+
+def save_mrz_roi(img) -> None:
+    """Extracts MRZ , Image from the data"""
+    
+    # MRZ lies below 30% of bottom half 
+    
+    
+    (h_img , w_img) = img.shape
+    
+    tl = int(h_img*0.80)
+    bl = w_img
+    
+    img = cv2.cvtColor(img , cv2.COLOR_GRAY2BGR)
+    
+    ROI_MRZ = img[tl : h_img - 30 , 30 : w_img - 30]
+    cv2.imwrite("Images/MRZ.jpg" , ROI_MRZ)
+    
+    preprocess_mrz("images/MRZ.jpg")
+    
 def preprocess(img):
     
     if img is None:
@@ -175,11 +218,14 @@ def preprocess(img):
         grey_img  = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
     
-    
+    print("[+] Detecting Contour")
     contour =  detect_document_contour(img)
+    print("[+] Performing prespective transform")
     grey_img = perspective_transform(image = grey_img , contour = contour)
+    print("[+] Upscaling")
     grey_img = esrgan_upscaling(grey_img)
-    grey_img = adaptive_binarization(img = grey_img)
+    
+    print("[+] Saving MRZ to Images/MRZ.jpg")
     
     return grey_img
 
