@@ -168,7 +168,7 @@ def esrgan_upscaling(img):
     
     return cv2.cvtColor(output , cv2.COLOR_BGR2GRAY)
 
-def preprocess_mrz(img_path : str) -> None:
+def preprocess_mrz(img_path : str) -> str:
     
     # 1. Load image
     img = cv2.imread(img_path , cv2.IMREAD_GRAYSCALE)
@@ -182,9 +182,9 @@ def preprocess_mrz(img_path : str) -> None:
     
     cv2.imwrite(img_path , cleaned)
     
+    return img_path
     
-
-def save_mrz_roi(img) -> None:
+def save_mrz_roi(img ,r_id) -> str:
     """Extracts MRZ , Image from the data"""
     
     # MRZ lies below 30% of bottom half 
@@ -198,11 +198,11 @@ def save_mrz_roi(img) -> None:
     img = cv2.cvtColor(img , cv2.COLOR_GRAY2BGR)
     
     ROI_MRZ = img[tl : h_img - 30 , 30 : w_img - 30]
-    cv2.imwrite("Images/MRZ.jpg" , ROI_MRZ)
+    cv2.imwrite(f"Images/MRZ_{r_id}.jpg" , ROI_MRZ)
     
-    preprocess_mrz("images/MRZ.jpg")
+    return preprocess_mrz(f"Images/MRZ_{r_id}.jpg")
     
-def preprocess(img):
+def preprocess(img, r_id : int):
     
     if img is None:
         
@@ -225,15 +225,19 @@ def preprocess(img):
     print("[+] Upscaling")
     grey_img = esrgan_upscaling(grey_img)
     
-    print("[+] Saving MRZ to Images/MRZ.jpg")
+    print(f"[+] Saving MRZ to Images/MRZ{r_id}.jpg")
     
-    return grey_img
+    mrz_roi_path = save_mrz_roi(grey_img , r_id)
+    
+    print("[+] Completed")
+    
+    return grey_img , mrz_roi_path
 
 if __name__ == "__main__":
     
     img = cv2.imread("image.png")
     
-    final_img = preprocess(img = img)
+    final_img , _ = preprocess(img = img, r_id = 0)
     
     cv2.imwrite("final_img.png" , final_img)
     

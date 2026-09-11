@@ -1,37 +1,52 @@
+import base64
+import sys
 from pathlib import Path
-import cv2
-import pytesseract
+import requests
 
-# 1. Load image
-img = cv2.imread("MRZ.jpg", cv2.IMREAD_GRAYSCALE)
 
-# 2. Add white padding around the text
-padded = cv2.copyMakeBorder(img, 40, 40, 40, 40, cv2.BORDER_CONSTANT, value=255)
+def encode_image_to_base64(image_path: str) -> str:
+    path = Path(image_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Image not found at path: {image_path}")
 
-# 3. Smooth jagged interpolation artifacts
-blurred = cv2.GaussianBlur(padded, (3, 3), 0)
-_, cleaned = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    with open(path, "rb") as img_file:
+        return base64.b64encode(img_file.read()).decode("utf-8")
 
-# 4. Configurations to test
-tessdata_dir = "/home/ashishd/SIH/Robust-OCR-For-Fake-Identity-and-Document-Screening/ml_engine/tessdata"
 
-# Test A: Custom MRZ model (Forced LSTM, single text block)
-config_mrz = (
-    f'--tessdata-dir "{tessdata_dir}" '
-    "-l mrz --oem 1 --psm 6 "
-    "-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789< "
-    "-c preserve_interword_spaces=0"
-)
+def test_predict(
+    image_path: str,
+    doc_id: int = 3,
+    request_id: int = 101,
+    url: str = "http://127.0.0.1:8000/predict",
+):
+    print(f"Encoding '{image_path}' to base64...")
+    b64_string = encode_image_to_base64(image_path)
 
-# Test B: Standard English model (often more resilient to font distortions)
-config_eng = (
-    "-l eng --oem 1 --psm 6 "
-    "-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789< "
-    "-c preserve_interword_spaces=0"
-)
+    payload = {"image_base64": b64_string}
 
-print("--- Testing MRZ Model ---")
-print(pytesseract.image_to_string(cleaned, config=config_mrz))
+    headers = {
+        "doc-id": str(doc_id),
+        "request-id": str(request_id),
+        "Content-Type": "application/json",
+    }
 
-print("--- Testing ENG Fallback ---")
-print(pytesseract.image_to_string(cleaned, config=config_eng))
+    print(f"Sending request to {url} (doc_id={doc_id}, request_id={request_id})...")
+
+    # If your endpoint is @app.post, use requests.post.
+    # If you haven't changed it from @app.get yet, use requests.get instead:
+    # response = requests.get(url, json=payload, headers=headers)
+    response = requests.post(url, json=payload, headers=headers)
+
+    print(f"HTTP Status Code: {response.status_code}")
+    try:
+        print("Response JSON:")
+        print(response.json())
+    except Exception:
+        print("Raw Response Text:")
+        print(response.text)
+
+
+if __name__ == "__main__":
+    # Pass an image file as a CLI argument, or default to MRZ.jpg in the directory
+    target_image = sys.argv[1] if len(sys.argv) > 1 else "MRZ.jpg"
+    test_predict(target_image, doc_id=3, request_id=1)

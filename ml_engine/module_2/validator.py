@@ -5,7 +5,14 @@ class invalidPassport(Exception):
 
 def validate_mrz(mrz : str) -> dict:
     
-    checker = TD3CodeChecker(mrz)
+    try:
+        checker = TD3CodeChecker(mrz)
+    except Exception as e:
+        return {
+            "status" : False
+        }
+    
+    
     
     if bool(checker):
         fields = checker.fields()
@@ -16,5 +23,7 @@ def validate_mrz(mrz : str) -> dict:
             "country" : fields.country,
             "nationality" : fields.nationality
         }
-    else:
-        raise invalidPassport("Invalid Passport")
+   
+    return {
+        "status" : False
+    }
