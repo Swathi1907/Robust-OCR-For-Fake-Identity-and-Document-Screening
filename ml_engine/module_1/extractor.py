@@ -10,7 +10,11 @@ config_mrz = config_mrz = (
 
 def extractMRZ(image_path : str) -> str:
     
-    return pytesseract.image_to_string(image_path , config = config_mrz)
+    x = pytesseract.image_to_string(image_path , config = config_mrz)
+    
+    print(x)
+    
+    return x
 
 def extractImage(image_path : str) -> None:
     pass

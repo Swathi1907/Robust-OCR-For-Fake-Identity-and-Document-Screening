@@ -109,7 +109,7 @@ def detect_document_contour(
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     dilated = cv2.dilate(edged, kernel, iterations=1)
 
-    contours, _ = cv2.findContours(dilated, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     # Sort contours by area in descending order and filter out minor background noise
     valid_candidates = []
@@ -145,7 +145,7 @@ def detect_document_contour(
         raise NoContourFound("Did not find a valid countour")
 
     # Primary sort: lowest aspect ratio deviation; Secondary: highest area
-    valid_candidates.sort(key=lambda x: (x["ar_diff"],x["center_y"],-x["area"]))
+    valid_candidates.sort(key=lambda x: (x["ar_diff"], -x["center_y"],-x["area"]))
     
     return valid_candidates[0]["contour"]
 
@@ -168,39 +168,44 @@ def esrgan_upscaling(img):
     
     return cv2.cvtColor(output , cv2.COLOR_BGR2GRAY)
 
-def preprocess_mrz(img_path : str) -> str:
-    
-    # 1. Load image
-    img = cv2.imread(img_path , cv2.IMREAD_GRAYSCALE)
+def preprocess_mrz(img_path: str) -> str:
+    # Load grayscale directly
+    img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
 
-# 2. Add white padding around the text
-    padded = cv2.copyMakeBorder(img, 40, 40, 40, 40, cv2.BORDER_CONSTANT, value=255) # type: ignore
+    # 1. DO NOT apply hard threshold/Otsu. Tesseract's LSTM engine needs grayscale antialiasing.
+    # 2. Add clean white padding so edge characters are not clipped
+    padded = cv2.copyMakeBorder(
+        img, 30, 30, 30, 30, cv2.BORDER_CONSTANT, value=255
+    )
 
-# 3. Smooth jagged interpolation artifacts
-    blurred = cv2.GaussianBlur(padded, (3, 3), 0)
-    _, cleaned = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    
-    cv2.imwrite(img_path , cleaned)
-    
+    # 3. Light normalization to maximize contrast without destroying gradients
+    norm = cv2.normalize(padded, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX)
+
+    cv2.imwrite(img_path, norm)
     return img_path
-    
-def save_mrz_roi(img ,r_id) -> str:
-    """Extracts MRZ , Image from the data"""
-    
-    # MRZ lies below 30% of bottom half 
-    
-    
-    (h_img , w_img) = img.shape
-    
-    tl = int(h_img*0.80)
-    bl = w_img
-    
-    img = cv2.cvtColor(img , cv2.COLOR_GRAY2BGR)
-    
-    ROI_MRZ = img[tl : h_img - 30 , 30 : w_img - 30]
-    cv2.imwrite(f"Images/MRZ_{r_id}.jpg" , ROI_MRZ)
-    
-    return preprocess_mrz(f"Images/MRZ_{r_id}.jpg")
+
+
+def save_mrz_roi(img: np.ndarray, r_id: int) -> str:
+    """Extracts the bottom ~16% of the opened passport document,
+
+    skipping the outer borders to isolate the text lines.
+    """
+    h_img, w_img = img.shape[:2]
+
+    # For an opened passport (1476x2079), the MRZ zone starts at ~84% height
+    # We inset by 60px horizontally and vertically to clear any bounding box borders
+    y_start = int(h_img * 0.84)
+    y_end = int(h_img * 0.98)
+    x_start = int(w_img * 0.04)
+    x_end = int(w_img * 0.96)
+
+    ROI_MRZ = img[y_start:y_end, x_start:x_end]
+
+    os.makedirs("Images", exist_ok=True)
+    out_path = f"Images/MRZ_{r_id}.jpg"
+    cv2.imwrite(out_path, ROI_MRZ)
+
+    return out_path
     
 def preprocess(img, r_id : int):
     
@@ -222,8 +227,11 @@ def preprocess(img, r_id : int):
     contour =  detect_document_contour(img)
     print("[+] Performing prespective transform")
     grey_img = perspective_transform(image = grey_img , contour = contour)
+    
+    
     print("[+] Upscaling")
     grey_img = esrgan_upscaling(grey_img)
+    cv2.imwrite("image.png" , grey_img)
     
     print(f"[+] Saving MRZ to Images/MRZ{r_id}.jpg")
     
