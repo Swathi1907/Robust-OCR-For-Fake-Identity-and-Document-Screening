@@ -48,9 +48,9 @@ def predict_(payload : ImagePayload ,
     if doc_id == 3:
         print("[+] Starting preprocessing ... ")
         
-        final_img, mrz_path = preprocess(img = img , r_id=request_id)
+        final_img, mrz = preprocess(img = img , r_id=request_id)
         
-        MRZ = extractor.extractMRZ(mrz_path)
+        MRZ = extractor.extractMRZ(mrz)
         
         status = validator.validate_mrz(mrz = MRZ)
         

@@ -8,9 +8,9 @@ config_mrz = config_mrz = (
     "-c preserve_interword_spaces=0"
 )
 
-def extractMRZ(image_path : str) -> str:
+def extractMRZ(image) -> str:
     
-    x = pytesseract.image_to_string(image_path , config = config_mrz)
+    x = pytesseract.image_to_string(image , config = config_mrz)
     
     print(x)
     

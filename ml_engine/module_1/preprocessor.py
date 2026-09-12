@@ -16,6 +16,9 @@ class NoContourFound(Exception):
 class InvalidImage(Exception):
     pass
 
+class unknownShape(Exception):
+    pass
+
 config_mrz = (
     '--tessdata-dir "ml_engine/tessdata" '
     "-l mrz --oem 1 --psm 6 "
@@ -73,6 +76,31 @@ def perspective_transform(image, contour):
     M = cv2.getPerspectiveTransform(rect, dst)
     return cv2.warpPerspective(image, M, (maxWidth, maxHeight))
 
+def correct_orientation(img) :
+
+    if len(img.shape) < 2:
+        raise unknownShape("img array has less than 2 dimensions")
+    
+    h , w = img.shape[:2]
+    
+    if w > h:
+        print("[+] Image is horizontal, rotating it 90 degrees clockwise")
+        return correct_orientation(cv2.rotate(img , cv2.ROTATE_90_CLOCKWISE))
+    
+    top_strip = img[: int(h*0.20), :]
+    bot_strip = img[int(h*0.80) : , :]
+    
+    top_energy = np.mean(np.abs(cv2.Sobel(top_strip , cv2.CV_32F , 1 , 0 , ksize=3)))
+    bot_energy = np.mean(np.abs(cv2.Sobel(bot_strip , cv2.CV_32F, 1 , 0 , ksize =3)))
+    
+    if top_energy > bot_energy:
+        print("[+] Image is upside down rotating it one 180 degree ")
+        
+        return cv2.rotate(img , cv2.ROTATE_180)
+    
+    return img
+        
+
 def detect_document_contour(
     img: np.ndarray, 
     target_aspect_ratio: float = 1.475, 
@@ -87,6 +115,7 @@ def detect_document_contour(
     Returns:
         np.ndarray of shape (4, 2) containing ordered corner points, or None if not found.
     """
+    
     if img is None or not isinstance(img, np.ndarray):
         raise ValueError("Input 'img' must be a valid numpy array.")
     
@@ -159,7 +188,7 @@ def esrgan_upscaling(img):
     
     upscaler = RealESRGANer(scale = 4,
                             model_path= "ml_engine/weights/RealESRGAN_x4plus.pth",
-                            tile = 198,
+                            tile = 256,
                             model = model)
     
     output, _ = upscaler.enhance(img)
@@ -175,17 +204,17 @@ def preprocess_mrz(img_path: str) -> str:
     # 1. DO NOT apply hard threshold/Otsu. Tesseract's LSTM engine needs grayscale antialiasing.
     # 2. Add clean white padding so edge characters are not clipped
     padded = cv2.copyMakeBorder(
-        img, 30, 30, 30, 30, cv2.BORDER_CONSTANT, value=255
-    )
+        img, 30, 30, 30, 30, cv2.BORDER_CONSTANT, value=255  # type: ignore
+    ) 
 
     # 3. Light normalization to maximize contrast without destroying gradients
-    norm = cv2.normalize(padded, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX)
+    norm = cv2.normalize(padded, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX)  # type: ignore
 
     cv2.imwrite(img_path, norm)
     return img_path
 
 
-def save_mrz_roi(img: np.ndarray, r_id: int) -> str:
+def mrz_roi(img: np.ndarray, r_id: int):
     """Extracts the bottom ~16% of the opened passport document,
 
     skipping the outer borders to isolate the text lines.
@@ -199,13 +228,8 @@ def save_mrz_roi(img: np.ndarray, r_id: int) -> str:
     x_start = int(w_img * 0.04)
     x_end = int(w_img * 0.96)
 
-    ROI_MRZ = img[y_start:y_end, x_start:x_end]
+    return img[y_start:y_end, x_start:x_end]
 
-    os.makedirs("Images", exist_ok=True)
-    out_path = f"Images/MRZ_{r_id}.jpg"
-    cv2.imwrite(out_path, ROI_MRZ)
-
-    return out_path
     
 def preprocess(img, r_id : int):
     
@@ -222,24 +246,26 @@ def preprocess(img, r_id : int):
     else:
         grey_img  = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
-    
     print("[+] Detecting Contour")
     contour =  detect_document_contour(img)
     print("[+] Performing prespective transform")
     grey_img = perspective_transform(image = grey_img , contour = contour)
     
+    print("[+] Correcting Orientation")
+            
+    grey_img = correct_orientation(grey_img)
     
-    print("[+] Upscaling")
-    grey_img = esrgan_upscaling(grey_img)
-    cv2.imwrite("image.png" , grey_img)
+    
+    # print("[+] Upscaling")
+    # grey_img = esrgan_upscaling(grey_img)
     
     print(f"[+] Saving MRZ to Images/MRZ{r_id}.jpg")
     
-    mrz_roi_path = save_mrz_roi(grey_img , r_id)
+    mrz = mrz_roi(grey_img , r_id)
     
     print("[+] Completed")
     
-    return grey_img , mrz_roi_path
+    return grey_img , mrz
 
 if __name__ == "__main__":
     
