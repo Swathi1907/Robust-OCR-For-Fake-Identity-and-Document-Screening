@@ -4,6 +4,11 @@ import numpy as np
 from realesrgan import RealESRGANer
 from basicsr.archs.rrdbnet_arch import RRDBNet
 
+import pytesseract
+
+import os
+
+os.environ["TESSDATA_PREFIX"] = "ml_engine/tessdata"
 
 class NoContourFound(Exception):
     pass
@@ -11,6 +16,15 @@ class NoContourFound(Exception):
 class InvalidImage(Exception):
     pass
 
+class unknownShape(Exception):
+    pass
+
+config_mrz = (
+    '--tessdata-dir "ml_engine/tessdata" '
+    "-l mrz --oem 1 --psm 6 "
+    "-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789< "
+    "-c preserve_interword_spaces=0"
+)
 
 def order_points(pts):
     """
@@ -62,6 +76,31 @@ def perspective_transform(image, contour):
     M = cv2.getPerspectiveTransform(rect, dst)
     return cv2.warpPerspective(image, M, (maxWidth, maxHeight))
 
+def correct_orientation(img) :
+
+    if len(img.shape) < 2:
+        raise unknownShape("img array has less than 2 dimensions")
+    
+    h , w = img.shape[:2]
+    
+    if w > h:
+        print("[+] Image is horizontal, rotating it 90 degrees clockwise")
+        return correct_orientation(cv2.rotate(img , cv2.ROTATE_90_CLOCKWISE))
+    
+    top_strip = img[: int(h*0.20), :]
+    bot_strip = img[int(h*0.80) : , :]
+    
+    top_energy = np.mean(np.abs(cv2.Sobel(top_strip , cv2.CV_32F , 1 , 0 , ksize=3)))
+    bot_energy = np.mean(np.abs(cv2.Sobel(bot_strip , cv2.CV_32F, 1 , 0 , ksize =3)))
+    
+    if top_energy > bot_energy:
+        print("[+] Image is upside down rotating it one 180 degree ")
+        
+        return cv2.rotate(img , cv2.ROTATE_180)
+    
+    return img
+        
+
 def detect_document_contour(
     img: np.ndarray, 
     target_aspect_ratio: float = 1.475, 
@@ -76,8 +115,10 @@ def detect_document_contour(
     Returns:
         np.ndarray of shape (4, 2) containing ordered corner points, or None if not found.
     """
+    
     if img is None or not isinstance(img, np.ndarray):
         raise ValueError("Input 'img' must be a valid numpy array.")
+    
 
     h_img, w_img = img.shape[:2]
     total_area = h_img * w_img
@@ -97,7 +138,7 @@ def detect_document_contour(
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     dilated = cv2.dilate(edged, kernel, iterations=1)
 
-    contours, _ = cv2.findContours(dilated, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     # Sort contours by area in descending order and filter out minor background noise
     valid_candidates = []
@@ -119,12 +160,12 @@ def detect_document_contour(
             if width == 0 or height == 0:
                 continue
 
-            aspect_ratio = max(width, height) / float(min(width, height))
+            aspect_ratio = max(width,height)/min(height,width)
             ar_diff = abs(aspect_ratio - target_aspect_ratio)
-
-            # Weight score favoring high area and low aspect ratio deviation
+            # Weight score favoring bottom most , high area and low aspect ratio deviation
             valid_candidates.append({
                 "contour": pts,
+                "center_y" : np.mean(pts[: ,1]),
                 "area": area,
                 "ar_diff": ar_diff
             })
@@ -133,7 +174,7 @@ def detect_document_contour(
         raise NoContourFound("Did not find a valid countour")
 
     # Primary sort: lowest aspect ratio deviation; Secondary: highest area
-    valid_candidates.sort(key=lambda x: (x["ar_diff"], -x["area"]))
+    valid_candidates.sort(key=lambda x: (x["ar_diff"], -x["center_y"],-x["area"]))
     
     return valid_candidates[0]["contour"]
 
@@ -147,6 +188,7 @@ def esrgan_upscaling(img):
     
     upscaler = RealESRGANer(scale = 4,
                             model_path= "ml_engine/weights/RealESRGAN_x4plus.pth",
+                            tile = 256,
                             model = model)
     
     output, _ = upscaler.enhance(img)
@@ -155,11 +197,41 @@ def esrgan_upscaling(img):
     
     return cv2.cvtColor(output , cv2.COLOR_BGR2GRAY)
 
-def adaptive_binarization(img):
-    """Apply adaptive thresholding to a grayscale image."""
-    return cv2.adaptiveThreshold(img , 255 , cv2.ADAPTIVE_THRESH_GAUSSIAN_C , cv2.THRESH_BINARY, 11 , 2)
+def preprocess_mrz(img_path: str) -> str:
+    # Load grayscale directly
+    img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
 
-def preprocess(img):
+    # 1. DO NOT apply hard threshold/Otsu. Tesseract's LSTM engine needs grayscale antialiasing.
+    # 2. Add clean white padding so edge characters are not clipped
+    padded = cv2.copyMakeBorder(
+        img, 30, 30, 30, 30, cv2.BORDER_CONSTANT, value=255  # type: ignore
+    ) 
+
+    # 3. Light normalization to maximize contrast without destroying gradients
+    norm = cv2.normalize(padded, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX)  # type: ignore
+
+    cv2.imwrite(img_path, norm)
+    return img_path
+
+
+def mrz_roi(img: np.ndarray, r_id: int):
+    """Extracts the bottom ~16% of the opened passport document,
+
+    skipping the outer borders to isolate the text lines.
+    """
+    h_img, w_img = img.shape[:2]
+
+    # For an opened passport (1476x2079), the MRZ zone starts at ~84% height
+    # We inset by 60px horizontally and vertically to clear any bounding box borders
+    y_start = int(h_img * 0.84)
+    y_end = int(h_img * 0.98)
+    x_start = int(w_img * 0.04)
+    x_end = int(w_img * 0.96)
+
+    return img[y_start:y_end, x_start:x_end]
+
+    
+def preprocess(img, r_id : int):
     
     if img is None:
         
@@ -174,20 +246,32 @@ def preprocess(img):
     else:
         grey_img  = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
-    
-    
+    print("[+] Detecting Contour")
     contour =  detect_document_contour(img)
+    print("[+] Performing prespective transform")
     grey_img = perspective_transform(image = grey_img , contour = contour)
-    grey_img = esrgan_upscaling(grey_img)
-    grey_img = adaptive_binarization(img = grey_img)
     
-    return grey_img
+    print("[+] Correcting Orientation")
+            
+    grey_img = correct_orientation(grey_img)
+    
+    
+    # print("[+] Upscaling")
+    # grey_img = esrgan_upscaling(grey_img)
+    
+    print(f"[+] Saving MRZ to Images/MRZ{r_id}.jpg")
+    
+    mrz = mrz_roi(grey_img , r_id)
+    
+    print("[+] Completed")
+    
+    return grey_img , mrz
 
 if __name__ == "__main__":
     
     img = cv2.imread("image.png")
     
-    final_img = preprocess(img = img)
+    final_img , _ = preprocess(img = img, r_id = 0)
     
     cv2.imwrite("final_img.png" , final_img)
     
